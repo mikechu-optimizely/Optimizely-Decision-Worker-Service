@@ -34,9 +34,8 @@ public class Worker : BackgroundService
 
         var tasks = new List<Task>();
         var results = new ConcurrentDictionary<int, int>();
-        for (int i = 0; i < iterations; i++)
+        for (var iteration = 0; iteration < iterations; iteration++)
         {
-            int iteration = i;
             tasks.Add(Task.Run(async () =>
             {
                 if (stoppingToken.IsCancellationRequested)
@@ -86,14 +85,18 @@ public class Worker : BackgroundService
             _logger.LogInformation("Cancellation requested before completion. ");
         }
 
-        if (results.Count == 0)
+        if (results.IsEmpty)
         {
             _logger.LogInformation("No iterations completed successfully.");
             return;
         }
+
+        var sortedResults = results.Values.OrderBy(x => x).ToList();
+        var medianIndex = sortedResults.Count / 2;
+
         _logger.LogInformation($"Finished running {results.Count} iterations after {runStopwatch.ElapsedMilliseconds} ms");
         _logger.LogInformation($"Average time per iteration: {results.Values.Average()} ms");
-        _logger.LogInformation($"Median time per iteration: {results.Values.OrderBy(x => x).ElementAt(iterations / 2)} ms");
+        _logger.LogInformation($"Median time per iteration: {sortedResults.ElementAt(medianIndex)} ms");
         _logger.LogInformation($"Fastest time per iteration: {results.Values.Min()} ms");
         _logger.LogInformation($"Slowest time per iteration: {results.Values.Max()} ms");
     }

@@ -21,23 +21,30 @@ public class Worker : BackgroundService
             .Build(false);
 
         _optimizelyInstance = OptimizelyFactory.NewDefaultInstance(configManager);
+
+        _logger.LogInformation($"Optimizely initialized with SDK Key '{sdkKey}'");
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         const int iterations = 1000;
+        _logger.LogInformation($"Running {iterations} iterations, with timing output at the end...");
+
         var runStopwatch = Stopwatch.StartNew();
 
         var tasks = new List<Task>();
         var results = new ConcurrentDictionary<int, int>();
-
-        _logger.LogInformation($"Running {iterations} iterations, with timing output at the end...");
-
         for (int i = 0; i < iterations; i++)
         {
             int iteration = i;
             tasks.Add(Task.Run(async () =>
             {
+                if (stoppingToken.IsCancellationRequested)
+                {
+                    _logger.LogInformation($"Cancellation requested before iteration {iteration} started.");
+                    return;
+                }
+
                 var taskStopwatch = Stopwatch.StartNew();
 
                 var accountIdGuid = Guid.NewGuid().ToString(); // Simulate an account identifier
@@ -49,11 +56,22 @@ public class Worker : BackgroundService
 
                 var userContext = _optimizelyInstance.CreateUserContext($"user{iteration}", attributes);
 
-                _ = await Task.Run(() => userContext?.DecideAll());
+                try
+                {
+                    _ = await Task.Run(() => userContext?.DecideAll(), stoppingToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger.LogInformation($"Iteration {iteration} was canceled.");
+                    return;
+                }
 
                 taskStopwatch.Stop();
+                var elapsedTime = taskStopwatch.ElapsedMilliseconds;
 
-                results.TryAdd(iteration, (int)taskStopwatch.ElapsedMilliseconds);
+                _logger.LogInformation($"Iteration {iteration} took {elapsedTime} ms");
+
+                results.TryAdd(iteration, (int)elapsedTime);
             }, stoppingToken));
         }
 
@@ -61,27 +79,22 @@ public class Worker : BackgroundService
 
         await Task.WhenAny(benchmarkTask, Task.Delay(Timeout.Infinite, stoppingToken));
 
-        if (benchmarkTask.IsCompleted)
+        runStopwatch.Stop();
+
+        if (benchmarkTask.IsCanceled)
         {
-            runStopwatch.Stop();
-            _logger.LogInformation($"Finished running {iterations} iterations after {runStopwatch.ElapsedMilliseconds} ms");
-            _logger.LogInformation($"Average time per iteration: {results.Values.Average()} ms");
-            _logger.LogInformation($"Median time per iteration: {results.Values.OrderBy(x => x).ElementAt(iterations / 2)} ms");
-            _logger.LogInformation($"Fastest time per iteration: {results.Values.Min()} ms");
-            _logger.LogInformation($"Slowest time per iteration: {results.Values.Max()} ms");
-        }
-        else
-        {
-            _logger.LogInformation("Cancellation requested before completion. Stopped");
+            _logger.LogInformation("Cancellation requested before completion. ");
         }
 
-        while (!stoppingToken.IsCancellationRequested)
+        if (results.Count == 0)
         {
-            if (_logger.IsEnabled(LogLevel.Information))
-            {
-                _logger.LogInformation("Worker running at: {time}", DateTimeOffset.Now);
-            }
-            await Task.Delay(1000, stoppingToken);
+            _logger.LogInformation("No iterations completed successfully.");
+            return;
         }
+        _logger.LogInformation($"Finished running {results.Count} iterations after {runStopwatch.ElapsedMilliseconds} ms");
+        _logger.LogInformation($"Average time per iteration: {results.Values.Average()} ms");
+        _logger.LogInformation($"Median time per iteration: {results.Values.OrderBy(x => x).ElementAt(iterations / 2)} ms");
+        _logger.LogInformation($"Fastest time per iteration: {results.Values.Min()} ms");
+        _logger.LogInformation($"Slowest time per iteration: {results.Values.Max()} ms");
     }
 }
